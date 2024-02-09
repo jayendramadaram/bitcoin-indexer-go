@@ -4,6 +4,7 @@ import (
 	"btc-indexer/config"
 	"btc-indexer/database"
 	path "btc-indexer/internal"
+	"btc-indexer/pkg/blockchain"
 	"btc-indexer/pkg/logger"
 )
 
@@ -20,13 +21,25 @@ func main() {
 
 	logger.Info("Logger Setup Complete")
 
-	_, err = database.NewMongoDBConnection(config.DB.URI)
+	mongoClient, err := database.NewMongoDBConnection(config.DB.URI)
 	if err != nil {
 		logger.Error(err.Error())
 		return
 	}
 
 	logger.Info("MongoDB Setup Complete")
+
+	blocksCol := mongoClient.Database(config.DB.Database).Collection("Blocks")
+	TxCol := mongoClient.Database(config.DB.Database).Collection("Transactions")
+	OutPointCol := mongoClient.Database(config.DB.Database).Collection("OutPoints")
+	store := database.NewStore(
+		blocksCol,
+		TxCol,
+		OutPointCol,
+	)
+
+	indexer := blockchain.NewIndexer(blockchain.ModeFull, blockchain.Mainnet, store)
+	indexer.Start()
 	// start indexerr [go routines]
 	// load server
 	// run server

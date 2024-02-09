@@ -7,7 +7,8 @@ import (
 )
 
 type DBConfig struct {
-	URI string `toml:"uri"`
+	URI      string `toml:"uri"`
+	Database string `toml:"database"`
 }
 
 type LoggerOptions struct {
@@ -22,7 +23,7 @@ type Config struct {
 
 func LoadConfig(path string) (*Config, error) {
 
-	fmt.Println("config path: ", )
+	fmt.Println("config path: ")
 	var config Config
 	metaData, err := toml.DecodeFile(path, &config)
 	if err != nil {

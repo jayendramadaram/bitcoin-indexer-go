@@ -1,16 +1,18 @@
 package blockchain
 
 import (
+	"btc-indexer/pkg/logger"
+
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire"
 )
 
-func newPeerConfig(params chaincfg.Params) *peer.Config {
+func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
-			// OnVersion:      sp.OnVersion,
-			// OnVerAck:       sp.OnVerAck,
+			OnVersion: pr.OnVersion,
+			OnVerAck:  pr.OnVerAck,
 			// OnMemPool:      sp.OnMemPool,
 			// OnTx:           sp.OnTx,
 			// OnBlock:        sp.OnBlock,
@@ -42,9 +44,33 @@ func newPeerConfig(params chaincfg.Params) *peer.Config {
 		NewestBlock:         nil,
 		UserAgentName:       "peer",
 		UserAgentVersion:    "1.0.0",
-		ChainParams:         &params,
+		ChainParams:         params,
 		Services:            wire.SFNodeWitness,
 		ProtocolVersion:     peer.MaxProtocolVersion,
 		DisableStallHandler: true,
 	}
+}
+
+type peerListeners struct {
+	logger     *logger.CustomLogger
+	validPeers chan *peer.Peer
+}
+
+func newPeerListeners(logger *logger.CustomLogger, validPeers chan *peer.Peer) *peerListeners {
+	return &peerListeners{
+		logger:     logger,
+		validPeers: validPeers,
+	}
+}
+
+func (pr *peerListeners) OnVersion(p *peer.Peer, msg *wire.MsgVersion) *wire.MsgReject {
+	return nil
+}
+
+func (pr *peerListeners) OnVerAck(p *peer.Peer, msg *wire.MsgVerAck) {
+	if p.Services()&wire.SFNodeWitness == wire.SFNodeWitness {
+		p.Disconnect()
+		return
+	}
+	pr.validPeers <- p
 }
