@@ -37,7 +37,6 @@ func (c *chain) getBlockLocator(height int32) ([]*chainhash.Hash, error) {
 	step := int32(1)
 
 	for height >= 0 {
-		//Todo: Get this hash from Db for block height for not orphan block
 		blockHash, err := c.store.GetBlockHashByHeight(height)
 		if err != nil {
 			return nil, err
@@ -49,6 +48,10 @@ func (c *chain) getBlockLocator(height int32) ([]*chainhash.Hash, error) {
 		}
 
 		locator = append(locator, chainhash)
+
+		if height == 0 {
+			break
+		}
 
 		height := height - step
 		if height < 0 {

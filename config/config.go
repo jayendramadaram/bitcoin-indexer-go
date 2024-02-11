@@ -16,9 +16,14 @@ type LoggerOptions struct {
 	LogBackTraceEnabled bool     `toml:"log_backtrace_enabled"`
 }
 
+type IndexConfig struct {
+	HeaderFirstMode bool `toml:"mode"`
+}
+
 type Config struct {
-	DB     DBConfig      `toml:"db"`
-	Logger LoggerOptions `toml:"logger"`
+	DB          DBConfig      `toml:"db"`
+	Logger      LoggerOptions `toml:"logger"`
+	IndexConfig IndexConfig   `toml:"indexCfg"`
 }
 
 func LoadConfig(path string) (*Config, error) {

@@ -34,12 +34,15 @@ const (
 )
 
 type indexer struct {
-	mode           Mode
-	chainParams    *chaincfg.Params
-	logger         *logger.CustomLogger
+	mode        Mode
+	chainParams *chaincfg.Params
+	logger      *logger.CustomLogger
+
 	currentPeer    *peer.Peer
-	availablePeers []*peer.Peer
+	availablePeers []string
 	state          state
+
+	headersFirstMode bool
 
 	chain Chain
 	store database.Store
@@ -50,7 +53,7 @@ type Chain interface {
 	findNextHeaderCheckpoint(height int32) *chaincfg.Checkpoint
 }
 
-func NewIndexer(mode Mode, chainType ChainType, store database.Store) *indexer {
+func NewIndexer(mode Mode, chainType ChainType, headersFirst bool, store database.Store) *indexer {
 	var chainParams *chaincfg.Params
 	switch chainType {
 	case Mainnet:
@@ -67,6 +70,8 @@ func NewIndexer(mode Mode, chainType ChainType, store database.Store) *indexer {
 		chainParams: chainParams,
 		logger:      logger.NewDefaultLogger(),
 
+		headersFirstMode: headersFirst,
+
 		chain: NewChain(store, chainParams.Checkpoints),
 		store: store,
 	}
@@ -74,39 +79,137 @@ func NewIndexer(mode Mode, chainType ChainType, store database.Store) *indexer {
 
 type state struct {
 	LastHeight int32
-	LastHash   string
+	LastHash   *chainhash.Hash
 }
 
 func (i *indexer) Start() {
 
+	LastHash, err := i.store.GetLatestBlockHash()
+	if err != nil {
+		i.logger.Error(err.Error())
+	}
+
+	i.state = state{
+		LastHeight: i.GetInitialBlockHeight(),
+		LastHash:   LastHash,
+	}
+
+	validPeers := make(chan *peer.Peer)
+	i.FilterPeers(validPeers)
+
+	// i.currentPeer = <-validPeers
+	for validPeer := range validPeers {
+		i.availablePeers = append(i.availablePeers, validPeer.Addr())
+		// if i.currentPeer.LastBlock() < validPeer.LastBlock() {
+		// 	// i.currentPeer.Disconnect()
+		// 	// i.currentPeer = validPeer
+		// 	continue
+		// }
+		validPeer.Disconnect()
+	}
+
+	var peerDoneChan = make(chan struct{})
+	i.startSync(peerDoneChan)
+
+	go func() {
+		for {
+			<-peerDoneChan
+			i.startSync(peerDoneChan)
+		}
+	}()
+
+	wg := &sync.WaitGroup{}
+	wg.Add(1)
+
+	// Now wait for the WaitGroup to be done, effectively blocking here until Done is called.
+	wg.Wait()
+}
+
+// gets a new peer if not set
+// and starts syncing
+func (i *indexer) startSync(peerDone chan struct{}) {
+	if i.currentPeer == nil {
+		peerDoneChan := make(chan struct{})
+		msgChan := make(chan interface{})
+
+		peer, err := i.GetRandPeer(peerDoneChan, msgChan)
+		if err != nil {
+			i.logger.Error(err.Error())
+			return
+		}
+		i.currentPeer = peer
+		i.logger.Info("Peer Connected: " + i.currentPeer.Addr())
+
+		go func() {
+			<-peerDoneChan
+			i.logger.Warn("received a done Msg")
+			i.processNext()
+		}()
+
+		go i.msgHandler(msgChan)
+	}
+
+	go func() {
+		i.currentPeer.WaitForDisconnect()
+		i.logger.Warn("Peer Disconnected: " + i.currentPeer.Addr())
+		i.currentPeer = nil
+		peerDone <- struct{}{}
+	}()
+
+	i.processNext()
+}
+
+// returns a random Peer
+func (i *indexer) GetRandPeer(peerDoneChan chan struct{}, msgChan chan interface{}) (*peer.Peer, error) {
+	index := rand.Intn(len(i.availablePeers))
+	i.logger.Info(fmt.Sprintf("Random Peer: %s for index %d", i.availablePeers[index], index))
+
+	listeners := newPeerListeners(i.logger, nil, msgChan, peerDoneChan)
+	listeners.DisableSend()
+	peer, err := peer.NewOutboundPeer(newPeerConfig(i.chainParams, listeners), i.availablePeers[index])
+	if err != nil {
+		return nil, err
+	}
+
+	conn, err := net.DialTimeout("tcp", i.availablePeers[index], 2*time.Second)
+	if err != nil {
+		return nil, err
+	}
+
+	peer.AssociateConnection(conn)
+
+	return peer, err
+}
+
+// getsLast Synced blockHeight
+// if it is a fresh start, it will return insert genesis block and return 0
+func (i *indexer) GetInitialBlockHeight() int32 {
 	LatestBlockHeight, err := i.store.GetLatestBlockHeight()
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
-			LatestBlockHeight = -1
+			if err := i.store.InitGenesisBlock(i.chainParams.GenesisBlock); err != nil {
+				i.logger.Error(err.Error())
+			}
+			LatestBlockHeight = 0
 		} else {
 			i.logger.Error(err.Error())
 		}
 	}
+	return LatestBlockHeight
+}
 
-	i.logger.Info(fmt.Sprintf("Latest Block Height: %d", LatestBlockHeight))
-
-	i.state = state{
-		LastHeight: LatestBlockHeight,
-		LastHash:   "",
-	}
-
+// filters available peers and returns peers which support Segwit Upgrade
+func (i *indexer) FilterPeers(validPeers chan *peer.Peer) {
 	peerIpChan := make(chan *wire.NetAddressV2)
-
 	defaultPeerPort, err := strconv.Atoi(i.chainParams.DefaultPort)
 	if err != nil {
 		i.logger.Error(err.Error())
 	}
 
 	go network.LookUpPeers(i.chainParams.DNSSeeds, uint16(defaultPeerPort), peerIpChan)
-	validPeers := make(chan *peer.Peer)
 
 	wg := new(sync.WaitGroup)
-	listeners := newPeerListeners(i.logger, validPeers)
+	listeners := newPeerListeners(i.logger, validPeers, nil, nil)
 	for peerAddr := range peerIpChan {
 		go func(peerAddr *wire.NetAddressV2) {
 			defer wg.Done()
@@ -133,80 +236,45 @@ func (i *indexer) Start() {
 		listeners.DisableSend()
 		close(validPeers)
 	}()
-
-	if i.currentPeer != nil {
-		return
-	}
-
-	for validPeer := range validPeers {
-		// i.currentPeer = validPeer
-		i.availablePeers = append(i.availablePeers, validPeer)
-		// if i.currentPeer.LastBlock() < validPeer.LastBlock() {
-		// i.currentPeer.Disconnect()
-		// 	i.currentPeer = validPeer
-		// 	continue
-		// }
-		validPeer.Disconnect()
-	}
-
-	var peerDoneChan = make(chan struct{})
-	i.startSync(peerDoneChan)
-
-	go func() {
-		for {
-			<-peerDoneChan
-			i.startSync(peerDoneChan)
-		}
-	}()
-
-	wg = &sync.WaitGroup{}
-	wg.Add(1)
-
-	// Now wait for the WaitGroup to be done, effectively blocking here until Done is called.
-	wg.Wait()
-
-	// Get Peer Ips
-	// pick best peer based on checkpoints
-	// design handlers
-	// request blocks
-	// process and store it in db
 }
 
-func (i *indexer) startSync(peerDone chan struct{}) {
-	i.currentPeer = i.GetRandPeer()
-	conn, err := net.DialTimeout("tcp", i.currentPeer.Addr(), 2*time.Second)
-	if err != nil {
-		return
-	}
-	i.currentPeer.AssociateConnection(conn)
-	go func() {
-		<-time.After(10 * time.Second)
-		i.logger.Info("Peer Disconnected: " + i.currentPeer.Addr())
-		peerDone <- struct{}{}
-	}()
-
+func (i *indexer) processNext() {
 	locator, err := i.chain.getBlockLocator(i.state.LastHeight)
 	if err != nil {
 		i.logger.Error(err.Error())
 	}
 
-	i.logger.Info("Syning From Peer: " + i.currentPeer.Addr())
+	i.logger.Info("Syncing From Peer: " + i.currentPeer.Addr())
 
-	nextCheckPoint := i.chain.findNextHeaderCheckpoint(i.state.LastHeight)
-	if nextCheckPoint == nil {
-		i.logger.Info("No Checkpoint Found")
-		return
+	if i.headersFirstMode {
+		nextCheckPoint := i.chain.findNextHeaderCheckpoint(i.state.LastHeight)
+		if nextCheckPoint == nil {
+			i.logger.Info("No Checkpoint Found")
+			return
+		}
+
+		if err := i.currentPeer.PushGetHeadersMsg(locator, nextCheckPoint.Hash); err != nil {
+			i.logger.Error(err.Error())
+		}
+
+		i.logger.Info(fmt.Sprintf("Downloading Headers from %d to %d", i.state.LastHeight, nextCheckPoint.Height))
 	}
 
-	if err := i.currentPeer.PushGetHeadersMsg(locator, nextCheckPoint.Hash); err != nil {
+	if err := i.currentPeer.PushGetBlocksMsg(locator, &chainhash.Hash{}); err != nil {
 		i.logger.Error(err.Error())
 	}
 
-	i.logger.Info(fmt.Sprintf("Downloading Headers from %d to %d", i.state.LastHeight, nextCheckPoint.Height))
+	i.logger.Info(fmt.Sprintf("Downloading Blocks from %d", i.state.LastHeight))
+
 }
 
-func (i *indexer) GetRandPeer() *peer.Peer {
-	index := rand.Intn(len(i.availablePeers))
-	i.logger.Info(fmt.Sprintf("Random Peer: %s for index %d", i.availablePeers[index].Addr(), index))
-	return i.availablePeers[index]
+func (i *indexer) msgHandler(msgChan chan interface{}) {
+	for msg := range msgChan {
+		switch msg := msg.(type) {
+		case *wire.MsgBlock:
+			if err := i.store.PutBlock(msg); err != nil {
+				i.logger.Error(err.Error())
+			}
+		}
+	}
 }

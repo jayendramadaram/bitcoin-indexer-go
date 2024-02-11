@@ -24,8 +24,8 @@ func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 			OnHeaders: pr.OnHeaders,
 			// OnMemPool:      sp.OnMemPool,
 			// OnTx:           sp.OnTx,
-			// OnBlock:        sp.OnBlock,
-			// OnInv:          sp.OnInv,
+			OnBlock: pr.OnBlock,
+			OnInv:   pr.OnInv,
 			// OnHeaders:      sp.OnHeaders,
 			// OnGetData:      sp.OnGetData,
 			// OnGetBlocks:    sp.OnGetBlocks,
@@ -55,7 +55,8 @@ func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 		ChainParams:         params,
 		Services:            wire.SFNodeWitness,
 		ProtocolVersion:     peer.MaxProtocolVersion,
-		DisableStallHandler: true,
+		DisableStallHandler: false,
+		AllowSelfConns:      true,
 	}
 }
 
@@ -63,13 +64,19 @@ type peerListeners struct {
 	logger     *logger.CustomLogger
 	validPeers chan *peer.Peer
 	CanSend    bool
+
+	msgChan chan interface{}
+
+	done chan struct{}
 }
 
-func newPeerListeners(logger *logger.CustomLogger, validPeers chan *peer.Peer) *peerListeners {
+func newPeerListeners(logger *logger.CustomLogger, validPeers chan *peer.Peer, msgChan chan interface{}, done chan struct{}) *peerListeners {
 	return &peerListeners{
 		logger:     logger,
 		validPeers: validPeers,
 		CanSend:    true,
+		msgChan:    msgChan,
+		done:       done,
 	}
 }
 
@@ -95,5 +102,14 @@ func (pr *peerListeners) OnHeaders(p *peer.Peer, msg *wire.MsgHeaders) {
 }
 
 func (pr *peerListeners) OnInv(p *peer.Peer, msg *wire.MsgInv) {
-	pr.logger.Debug(fmt.Sprintf("Inv: %d", len(msg.InvList)))
+	pr.logger.Debug(fmt.Sprintf("Inv: %d of type %d", len(msg.InvList), msg.InvList[0].Type))
+	sendMsg := wire.NewMsgGetData()
+	for _, inv := range msg.InvList {
+		sendMsg.AddInvVect(inv)
+	}
+	p.QueueMessage(sendMsg, pr.done)
+}
+
+func (pr *peerListeners) OnBlock(p *peer.Peer, msg *wire.MsgBlock, buf []byte) {
+	pr.logger.Debug(fmt.Sprintf("Block: %s", msg.BlockHash().String()))
 }

@@ -47,9 +47,9 @@ func main() {
 
 	logger.Info("MongoDB Setup Complete")
 
-	indexer := blockchain.NewIndexer(blockchain.ModeFull, blockchain.Mainnet, store)
+	indexer := blockchain.NewIndexer(blockchain.ModeFull, blockchain.Mainnet, config.IndexConfig.HeaderFirstMode, store)
 	indexer.Start()
-	// start indexerr [go routines]
+	// start indexer [go routines]
 	// load server
 	// run server
 }

@@ -92,7 +92,7 @@ func logMessage(level, color, msg string) {
 func logMessageWithBacktrace(level, color, msg string) {
 	logMessage(level, color, msg)
 	stack := make([]byte, 1<<16)
-	length := runtime.Stack(stack, true)
+	length := runtime.Stack(stack, false)
 	log.Printf("Stack trace:\n%s\n", stack[:length])
 }
 
