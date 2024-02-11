@@ -2,17 +2,26 @@ package blockchain
 
 import (
 	"btc-indexer/pkg/logger"
+	"fmt"
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire"
 )
 
+type peerWrap struct {
+	peer       *peer.Config
+	logger     *logger.CustomLogger
+	validPeers chan *peer.Peer
+	CanSend    bool
+}
+
 func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
 			OnVersion: pr.OnVersion,
-			OnVerAck:  pr.OnVerAck,
+			// OnVerAck:  pr.OnVerAck,
+			OnHeaders: pr.OnHeaders,
 			// OnMemPool:      sp.OnMemPool,
 			// OnTx:           sp.OnTx,
 			// OnBlock:        sp.OnBlock,
@@ -20,7 +29,6 @@ func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 			// OnHeaders:      sp.OnHeaders,
 			// OnGetData:      sp.OnGetData,
 			// OnGetBlocks:    sp.OnGetBlocks,
-			// OnGetHeaders:   sp.OnGetHeaders,
 			// OnGetCFilters:  sp.OnGetCFilters,
 			// OnGetCFHeaders: sp.OnGetCFHeaders,
 			// OnGetCFCheckpt: sp.OnGetCFCheckpt,
@@ -54,23 +62,38 @@ func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 type peerListeners struct {
 	logger     *logger.CustomLogger
 	validPeers chan *peer.Peer
+	CanSend    bool
 }
 
 func newPeerListeners(logger *logger.CustomLogger, validPeers chan *peer.Peer) *peerListeners {
 	return &peerListeners{
 		logger:     logger,
 		validPeers: validPeers,
+		CanSend:    true,
 	}
+}
+
+func (pr *peerListeners) DisableSend() {
+	pr.CanSend = false
 }
 
 func (pr *peerListeners) OnVersion(p *peer.Peer, msg *wire.MsgVersion) *wire.MsgReject {
+	if p.Services()&wire.SFNodeWitness == wire.SFNodeWitness {
+		if pr.CanSend {
+			pr.validPeers <- p
+			return nil
+		}
+	}
 	return nil
 }
 
-func (pr *peerListeners) OnVerAck(p *peer.Peer, msg *wire.MsgVerAck) {
-	if p.Services()&wire.SFNodeWitness == wire.SFNodeWitness {
-		p.Disconnect()
-		return
+func (pr *peerListeners) OnHeaders(p *peer.Peer, msg *wire.MsgHeaders) {
+	pr.logger.Debug(fmt.Sprintf("Headers: %d", len(msg.Headers)))
+	for _, hdr := range msg.Headers {
+		pr.logger.Debug(fmt.Sprintf("Header: %s", hdr.Timestamp))
 	}
-	pr.validPeers <- p
+}
+
+func (pr *peerListeners) OnInv(p *peer.Peer, msg *wire.MsgInv) {
+	pr.logger.Debug(fmt.Sprintf("Inv: %d", len(msg.InvList)))
 }

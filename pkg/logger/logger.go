@@ -3,6 +3,7 @@ package logger
 import (
 	"fmt"
 	"log"
+	"os"
 	"runtime"
 	"time"
 )
@@ -70,8 +71,14 @@ func (cl *CustomLogger) Debug(msg string) {
 }
 
 func (cl *CustomLogger) Error(msg string) {
-	if cl.shouldLog("error") && cl.logBackTraceEnabled {
-		logMessageWithBacktrace("error", Red, msg)
+	if cl.shouldLog("error") {
+		if cl.logBackTraceEnabled {
+			logMessageWithBacktrace("error", Red, msg)
+		} else {
+			_, file, line, _ := runtime.Caller(1)
+			logMessage("error", Red, fmt.Sprintf("Error at line %s:%d : %s", file, line, msg))
+		}
+		os.Exit(1)
 	}
 }
 

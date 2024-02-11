@@ -23,7 +23,6 @@ type Config struct {
 
 func LoadConfig(path string) (*Config, error) {
 
-	fmt.Println("config path: ")
 	var config Config
 	metaData, err := toml.DecodeFile(path, &config)
 	if err != nil {
