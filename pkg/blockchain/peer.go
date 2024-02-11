@@ -9,23 +9,16 @@ import (
 	"github.com/btcsuite/btcd/wire"
 )
 
-type peerWrap struct {
-	peer       *peer.Config
-	logger     *logger.CustomLogger
-	validPeers chan *peer.Peer
-	CanSend    bool
-}
-
 func newPeerConfig(params *chaincfg.Params, pr *peerListeners) *peer.Config {
 	return &peer.Config{
 		Listeners: peer.MessageListeners{
 			OnVersion: pr.OnVersion,
-			// OnVerAck:  pr.OnVerAck,
 			OnHeaders: pr.OnHeaders,
+			OnBlock:   pr.OnBlock,
+			OnInv:     pr.OnInv,
+			// OnVerAck:  pr.OnVerAck,
 			// OnMemPool:      sp.OnMemPool,
 			// OnTx:           sp.OnTx,
-			OnBlock: pr.OnBlock,
-			OnInv:   pr.OnInv,
 			// OnHeaders:      sp.OnHeaders,
 			// OnGetData:      sp.OnGetData,
 			// OnGetBlocks:    sp.OnGetBlocks,
@@ -111,5 +104,6 @@ func (pr *peerListeners) OnInv(p *peer.Peer, msg *wire.MsgInv) {
 }
 
 func (pr *peerListeners) OnBlock(p *peer.Peer, msg *wire.MsgBlock, buf []byte) {
-	pr.logger.Debug(fmt.Sprintf("Block: %s", msg.BlockHash().String()))
+	pr.logger.Debug(fmt.Sprintf("Processing Block: %s", msg.Header.Timestamp))
+	pr.msgChan <- msg
 }

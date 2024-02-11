@@ -75,6 +75,7 @@ func (s *store) GetLatestBlockHash() (*chainhash.Hash, error) {
 }
 
 func (s *store) PutBlock(block *wire.MsgBlock) error {
+	fmt.Println("TODO")
 	return nil
 }
 
