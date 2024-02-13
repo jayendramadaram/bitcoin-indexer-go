@@ -218,20 +218,106 @@ func (s *store) PutBlock(block *wire.MsgBlock) error {
 	return nil
 }
 
-func (s *store) processTxs(txs []*wire.MsgTx, blockhash string, blockIndex int32) {
+// process TXs V0
+// func (s *store) processTxs(txs []*wire.MsgTx, blockhash string, blockIndex int32) {
+// 	for _, tx := range txs {
+// 		err := s.PutTx(tx, blockhash, blockIndex)
+// 		if err != nil {
+// 			s.logger.Error(err.Error())
+// 		}
+// 	}
+// }
 
-	// wg := new(sync.WaitGroup)
+// process tx v1
+func (s *store) processTxs(txs []*wire.MsgTx, blockhash string, blockIndex int32) {
+	// iterate through all txs
+	// batch all outpoints and insert
+	// then batch all txs and insert
+	// then batch all inputs and insert
+	transactions := make([]interface{}, 0)
+	outpoints := make([]interface{}, 0)
 	for _, tx := range txs {
-		// wg.Add(1)
-		// go func(tx *wire.MsgTx) {
-		err := s.PutTx(tx, blockhash, blockIndex)
-		if err != nil {
-			s.logger.Error(err.Error())
+		// batching all txs and insert
+		transaction := Transaction{
+			ID:         tx.TxHash().String(),
+			LockTime:   tx.LockTime,
+			Version:    tx.Version,
+			Safe:       true,
+			BlockHash:  blockhash,
+			BlockIndex: blockIndex,
 		}
-		// wg.Done()
-		// }(tx)
+		transactions = append(transactions, transaction)
+
+		// batching all outpoints and insert
+		for i, out := range tx.TxOut {
+			spenderAddress := ""
+
+			pkScript, err := txscript.ParsePkScript(out.PkScript)
+			if err == nil {
+				addr, err := pkScript.Address(s.chainParams)
+				if err != nil {
+					s.logger.Error(err.Error())
+				}
+				spenderAddress = addr.EncodeAddress()
+			}
+
+			outPoint := OutPoint{
+				FundingTxHash:  tx.TxHash().String(),
+				FundingTxIndex: uint32(i),
+				PkScript:       hex.EncodeToString(out.PkScript),
+				Value:          out.Value,
+				Spender:        spenderAddress,
+				Type:           pkScript.Class().String(),
+			}
+			outpoints = append(outpoints, outPoint)
+		}
 	}
-	// wg.Wait()
+
+	_, err := s.txs.InsertMany(context.TODO(), transactions)
+	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			s.logger.Warn(fmt.Sprintf("Transaction %s already exists", txs[0].TxHash().String()))
+			return
+		}
+		s.logger.Error(err.Error())
+		return
+	}
+
+	_, err = s.out.InsertMany(context.TODO(), outpoints)
+	if err != nil {
+		s.logger.Error(err.Error())
+		return
+	}
+
+	// bulk update funding txs
+	bulkWriteModels := make([]mongo.WriteModel, 0)
+	for _, tx := range txs {
+		for i, txIn := range tx.TxIn {
+			witness := make([]string, len(txIn.Witness))
+			for i, w := range txIn.Witness {
+				witness[i] = hex.EncodeToString(w)
+			}
+			witnessToHex := strings.Join(witness, ",")
+
+			bulkWriteModels = append(bulkWriteModels, mongo.NewUpdateOneModel().
+				SetFilter(bson.D{
+					{Key: "funding_tx_hash", Value: txIn.PreviousOutPoint.Hash.String()},
+					{Key: "funding_tx_index", Value: txIn.PreviousOutPoint.Index}}).
+				SetUpdate(bson.D{{Key: "$set", Value: bson.D{
+					{Key: "spending_tx_hash", Value: tx.TxHash().String()},
+					{Key: "spending_tx_index", Value: uint32(i)},
+					{Key: "witness", Value: witnessToHex},
+					{Key: "sequence", Value: txIn.Sequence},
+					{Key: "signature_script", Value: hex.EncodeToString(txIn.SignatureScript)},
+				}}}))
+		}
+	}
+
+	_, err = s.out.BulkWrite(context.TODO(), bulkWriteModels)
+	if err != nil {
+		s.logger.Error(err.Error())
+		return
+	}
 }
 
 func (s *store) PutTx(tx *wire.MsgTx, blockhash string, blockIndex int32) error {
@@ -245,6 +331,11 @@ func (s *store) PutTx(tx *wire.MsgTx, blockhash string, blockIndex int32) error 
 	}
 	_, err := s.txs.InsertOne(context.TODO(), transaction)
 	if err != nil {
+		if mongo.IsDuplicateKeyError(err) {
+			s.logger.Warn(fmt.Sprintf("Transaction %s already exists", tx.TxHash().String()))
+			return nil
+		}
+		s.logger.Error(err.Error())
 		return err
 	}
 
@@ -274,6 +365,9 @@ func (s *store) PutTx(tx *wire.MsgTx, blockhash string, blockIndex int32) error 
 		}
 		_, err = s.out.InsertOne(context.TODO(), outPoint)
 		if err != nil {
+			if mongo.IsDuplicateKeyError(err) {
+				s.logger.Warn(fmt.Sprintf("OutPoint %s already exists", outPoint.FundingTxHash))
+			}
 			return err
 		}
 	}

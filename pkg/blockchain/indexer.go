@@ -49,6 +49,8 @@ type indexer struct {
 
 	requestedBlocks int
 	processedBlocks int
+
+	stallPeerTicker *time.Ticker
 }
 
 type Chain interface {
@@ -77,6 +79,8 @@ func NewIndexer(mode Mode, chainType ChainType, headersFirst bool, store databas
 
 		chain: NewChain(store, chainParams.Checkpoints),
 		store: store,
+
+		stallPeerTicker: time.NewTicker(15 * time.Second),
 	}
 }
 
@@ -126,19 +130,10 @@ func (i *indexer) Start() {
 	}
 
 	var peerDoneChan = make(chan struct{})
-	go func() {
-		for {
-			<-peerDoneChan
-			i.startSync(peerDoneChan)
-		}
-	}()
 	i.startSync(peerDoneChan)
-
-	wg := &sync.WaitGroup{}
-	wg.Add(1)
-
-	// Now wait for the WaitGroup to be done, effectively blocking here until Done is called.
-	wg.Wait()
+	for range peerDoneChan {
+		i.startSync(peerDoneChan)
+	}
 }
 
 // gets a new peer if not set
@@ -160,18 +155,32 @@ func (i *indexer) startSync(peerDone chan struct{}) {
 
 	go i.msgHandler(msgChan, processDoneChan)
 
+	var progresslogDoneChan = make(chan struct{})
+
 	go func() {
 		i.currentPeer.WaitForDisconnect()
 		i.logger.Warn("Peer Disconnected: " + i.currentPeer.Addr())
 		i.currentPeer = nil
 		peerDone <- struct{}{}
+		progresslogDoneChan <- struct{}{}
+		return
 	}()
 
 	go func() {
 		fmt.Printf("Start %s \n", time.Now())
 		for {
-			timestamp := <-time.After(30 * time.Second)
-			fmt.Printf("Processed Blocks : %d [%s] \n", i.state.LastHeight, timestamp)
+			select {
+			case <-i.stallPeerTicker.C:
+				if i.currentPeer != nil {
+					i.currentPeer.Disconnect()
+					i.logger.Warn("Peer Stalled: " + i.currentPeer.Addr())
+				}
+				return
+			case <-progresslogDoneChan:
+				return
+			case timestamp := <-time.After(60 * time.Second):
+				fmt.Printf("Processed Blocks : %d [%s] \n", i.state.LastHeight, timestamp)
+			}
 		}
 	}()
 
@@ -182,6 +191,8 @@ func (i *indexer) startSync(peerDone chan struct{}) {
 		i.requestedBlocks = <-invMsgCountChan
 		i.processedBlocks = 0
 		<-processDoneChan
+
+		i.stallPeerTicker.Reset(15 * time.Second)
 
 		latestBlockHeight, err := i.store.GetLatestBlockHeight()
 		if err != nil {
