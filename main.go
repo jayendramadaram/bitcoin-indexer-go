@@ -39,11 +39,16 @@ func main() {
 		return
 	}
 
-	store := database.NewStore(
+	store, err := database.NewStore(
 		mi.BlocksCol,
 		mi.TxCol,
 		mi.OutCol,
 	)
+
+	if err != nil {
+		logger.Error(err.Error())
+		return
+	}
 
 	logger.Info("MongoDB Setup Complete")
 

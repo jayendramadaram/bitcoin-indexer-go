@@ -53,7 +53,7 @@ func (c *chain) getBlockLocator(height int32) ([]*chainhash.Hash, error) {
 			break
 		}
 
-		height := height - step
+		height = height - step
 		if height < 0 {
 			height = 0
 		}

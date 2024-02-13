@@ -46,6 +46,9 @@ type indexer struct {
 
 	chain Chain
 	store database.Store
+
+	requestedBlocks int
+	processedBlocks int
 }
 
 type Chain interface {
@@ -83,14 +86,28 @@ type state struct {
 }
 
 func (i *indexer) Start() {
-
+	i.store.SetChainCfg(i.chainParams)
+	LastHeight := i.GetInitialBlockHeight()
 	LastHash, err := i.store.GetLatestBlockHash()
 	if err != nil {
 		i.logger.Error(err.Error())
 	}
 
+	txhash, err := i.store.GetLatestTxHash()
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			err = i.store.InitCoinBaseTx()
+			if err != nil {
+				i.logger.Error(err.Error())
+			}
+		} else {
+			i.logger.Error(err.Error())
+		}
+	}
+	fmt.Println("Latest TxHash: ", txhash)
+
 	i.state = state{
-		LastHeight: i.GetInitialBlockHeight(),
+		LastHeight: LastHeight,
 		LastHash:   LastHash,
 	}
 
@@ -109,14 +126,13 @@ func (i *indexer) Start() {
 	}
 
 	var peerDoneChan = make(chan struct{})
-	i.startSync(peerDoneChan)
-
 	go func() {
 		for {
 			<-peerDoneChan
 			i.startSync(peerDoneChan)
 		}
 	}()
+	i.startSync(peerDoneChan)
 
 	wg := &sync.WaitGroup{}
 	wg.Add(1)
@@ -128,26 +144,21 @@ func (i *indexer) Start() {
 // gets a new peer if not set
 // and starts syncing
 func (i *indexer) startSync(peerDone chan struct{}) {
-	if i.currentPeer == nil {
-		peerDoneChan := make(chan struct{})
-		msgChan := make(chan interface{})
+	i.logger.Info("Start Syncing from Peer")
+	InvDoneChan := make(chan struct{})
+	msgChan := make(chan interface{})
+	invMsgCountChan := make(chan int)
+	processDoneChan := make(chan struct{})
 
-		peer, err := i.GetRandPeer(peerDoneChan, msgChan)
-		if err != nil {
-			i.logger.Error(err.Error())
-			return
-		}
-		i.currentPeer = peer
-		i.logger.Info("Peer Connected: " + i.currentPeer.Addr())
-
-		go func() {
-			<-peerDoneChan
-			i.logger.Warn("received a done Msg")
-			i.processNext()
-		}()
-
-		go i.msgHandler(msgChan)
+	peer, err := i.GetRandPeer(InvDoneChan, msgChan, invMsgCountChan)
+	if err != nil {
+		i.logger.Error(err.Error())
+		return
 	}
+	i.currentPeer = peer
+	i.logger.Info("Peer Connected: " + i.currentPeer.Addr())
+
+	go i.msgHandler(msgChan, processDoneChan)
 
 	go func() {
 		i.currentPeer.WaitForDisconnect()
@@ -156,15 +167,39 @@ func (i *indexer) startSync(peerDone chan struct{}) {
 		peerDone <- struct{}{}
 	}()
 
-	i.processNext()
+	go func() {
+		fmt.Printf("Start %s", time.Now())
+		for {
+			timestamp := <-time.After(30 * time.Second)
+			fmt.Printf("Processed Blocks : %d [%s] \n", i.state.LastHeight, timestamp)
+		}
+	}()
+
+	for {
+		i.processNext()
+
+		<-InvDoneChan
+		i.requestedBlocks = <-invMsgCountChan
+		i.processedBlocks = 0
+		<-processDoneChan
+
+		latestBlockHeight, err := i.store.GetLatestBlockHeight()
+		if err != nil {
+			i.logger.Error(err.Error())
+			return
+		}
+		i.state.LastHeight = latestBlockHeight
+		i.logger.Warn("received a done Msg")
+	}
+
 }
 
 // returns a random Peer
-func (i *indexer) GetRandPeer(peerDoneChan chan struct{}, msgChan chan interface{}) (*peer.Peer, error) {
+func (i *indexer) GetRandPeer(invDoneChan chan struct{}, msgChan chan interface{}, invCountChan chan int) (*peer.Peer, error) {
 	index := rand.Intn(len(i.availablePeers))
 	i.logger.Info(fmt.Sprintf("Random Peer: %s for index %d", i.availablePeers[index], index))
 
-	listeners := newPeerListeners(i.logger, nil, msgChan, peerDoneChan)
+	listeners := newPeerListeners(i.logger, nil, msgChan, invDoneChan, invCountChan)
 	listeners.DisableSend()
 	peer, err := peer.NewOutboundPeer(newPeerConfig(i.chainParams, listeners), i.availablePeers[index])
 	if err != nil {
@@ -184,16 +219,22 @@ func (i *indexer) GetRandPeer(peerDoneChan chan struct{}, msgChan chan interface
 // getsLast Synced blockHeight
 // if it is a fresh start, it will return insert genesis block and return 0
 func (i *indexer) GetInitialBlockHeight() int32 {
-	LatestBlockHeight, err := i.store.GetLatestBlockHeight()
-	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			if err := i.store.InitGenesisBlock(i.chainParams.GenesisBlock); err != nil {
-				i.logger.Error(err.Error())
-			}
-			LatestBlockHeight = 0
-		} else {
+	LatestBlockHeight, _ := i.store.GetLatestBlockHeight()
+	// if err != nil {
+	// 	if err == mongo.ErrNoDocuments {
+	// 		if err := i.store.InitGenesisBlock(i.chainParams.GenesisBlock); err != nil {
+	// 			i.logger.Error(err.Error())
+	// 		}
+	// 		LatestBlockHeight = 0
+	// 	} else {
+	// 		i.logger.Error(err.Error())
+	// 	}
+	// }
+	if LatestBlockHeight == -1 {
+		if err := i.store.InitGenesisBlock(i.chainParams.GenesisBlock); err != nil {
 			i.logger.Error(err.Error())
 		}
+		LatestBlockHeight = 0
 	}
 	return LatestBlockHeight
 }
@@ -209,7 +250,7 @@ func (i *indexer) FilterPeers(validPeers chan *peer.Peer) {
 	go network.LookUpPeers(i.chainParams.DNSSeeds, uint16(defaultPeerPort), peerIpChan)
 
 	wg := new(sync.WaitGroup)
-	listeners := newPeerListeners(i.logger, validPeers, nil, nil)
+	listeners := newPeerListeners(i.logger, validPeers, nil, nil, nil)
 	for peerAddr := range peerIpChan {
 		go func(peerAddr *wire.NetAddressV2) {
 			defer wg.Done()
@@ -268,12 +309,17 @@ func (i *indexer) processNext() {
 
 }
 
-func (i *indexer) msgHandler(msgChan chan interface{}) {
+func (i *indexer) msgHandler(msgChan chan interface{}, processDoneChan chan struct{}) {
 	for msg := range msgChan {
 		switch msg := msg.(type) {
 		case *wire.MsgBlock:
 			if err := i.store.PutBlock(msg); err != nil {
 				i.logger.Error(err.Error())
+			}
+			i.processedBlocks++
+			if i.processedBlocks == i.requestedBlocks {
+				i.logger.Info(fmt.Sprintf("Processed Blocks: %d", i.processedBlocks))
+				processDoneChan <- struct{}{}
 			}
 		}
 	}

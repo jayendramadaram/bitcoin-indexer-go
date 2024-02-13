@@ -40,7 +40,7 @@ func (mi *mongoInstance) SetupIndexerClient(ctx context.Context, dbName string) 
 
 	heightIndex := mongo.IndexModel{
 		Keys:    bson.D{{Key: "height", Value: 1}},
-		Options: options.Index().SetUnique(true),
+		Options: options.Index().SetUnique(false),
 	}
 
 	prevBlockIndex := mongo.IndexModel{
@@ -53,18 +53,8 @@ func (mi *mongoInstance) SetupIndexerClient(ctx context.Context, dbName string) 
 		return mi, err
 	}
 
-	spendingTxIndex := mongo.IndexModel{
-		Keys:    bson.D{{Key: "spending_tx_id", Value: 1}},
-		Options: options.Index().SetUnique(false),
-	}
-
 	spendingTxhashIndex := mongo.IndexModel{
 		Keys:    bson.D{{Key: "spending_tx_hash", Value: 1}},
-		Options: options.Index().SetUnique(false),
-	}
-
-	fundingTxIndex := mongo.IndexModel{
-		Keys:    bson.D{{Key: "funding_tx_id", Value: 1}},
 		Options: options.Index().SetUnique(false),
 	}
 
@@ -73,7 +63,12 @@ func (mi *mongoInstance) SetupIndexerClient(ctx context.Context, dbName string) 
 		Options: options.Index().SetUnique(false),
 	}
 
-	_, err = TxCol.Indexes().CreateMany(ctx, []mongo.IndexModel{spendingTxIndex, spendingTxhashIndex, fundingTxIndex, fundingTxhashIndex})
+	fundingTxIndexIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "funding_tx_index", Value: 1}},
+		Options: options.Index().SetUnique(false),
+	}
+
+	_, err = TxCol.Indexes().CreateMany(ctx, []mongo.IndexModel{spendingTxhashIndex, fundingTxhashIndex, fundingTxIndexIndex})
 	if err != nil {
 		return mi, err
 	}

@@ -58,18 +58,20 @@ type peerListeners struct {
 	validPeers chan *peer.Peer
 	CanSend    bool
 
-	msgChan chan interface{}
+	msgChan    chan interface{}
+	InvMsgChan chan int
 
 	done chan struct{}
 }
 
-func newPeerListeners(logger *logger.CustomLogger, validPeers chan *peer.Peer, msgChan chan interface{}, done chan struct{}) *peerListeners {
+func newPeerListeners(logger *logger.CustomLogger, validPeers chan *peer.Peer, msgChan chan interface{}, done chan struct{}, InvMsgChan chan int) *peerListeners {
 	return &peerListeners{
 		logger:     logger,
 		validPeers: validPeers,
 		CanSend:    true,
 		msgChan:    msgChan,
 		done:       done,
+		InvMsgChan: InvMsgChan,
 	}
 }
 
@@ -95,15 +97,20 @@ func (pr *peerListeners) OnHeaders(p *peer.Peer, msg *wire.MsgHeaders) {
 }
 
 func (pr *peerListeners) OnInv(p *peer.Peer, msg *wire.MsgInv) {
+	if msg.InvList[0].Type != wire.InvTypeBlock {
+		return
+	}
 	pr.logger.Debug(fmt.Sprintf("Inv: %d of type %d", len(msg.InvList), msg.InvList[0].Type))
 	sendMsg := wire.NewMsgGetData()
 	for _, inv := range msg.InvList {
 		sendMsg.AddInvVect(inv)
 	}
 	p.QueueMessage(sendMsg, pr.done)
+	if msg.InvList[0].Type == wire.InvTypeBlock {
+		pr.InvMsgChan <- len(msg.InvList)
+	}
 }
 
 func (pr *peerListeners) OnBlock(p *peer.Peer, msg *wire.MsgBlock, buf []byte) {
-	pr.logger.Debug(fmt.Sprintf("Processing Block: %s", msg.Header.Timestamp))
 	pr.msgChan <- msg
 }
