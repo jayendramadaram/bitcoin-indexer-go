@@ -168,7 +168,7 @@ func (i *indexer) startSync(peerDone chan struct{}) {
 	}()
 
 	go func() {
-		fmt.Printf("Start %s", time.Now())
+		fmt.Printf("Start %s \n", time.Now())
 		for {
 			timestamp := <-time.After(30 * time.Second)
 			fmt.Printf("Processed Blocks : %d [%s] \n", i.state.LastHeight, timestamp)
@@ -285,7 +285,7 @@ func (i *indexer) processNext() {
 		i.logger.Error(err.Error())
 	}
 
-	i.logger.Info("Syncing From Peer: " + i.currentPeer.Addr())
+	// i.logger.Info("Syncing From Peer: " + i.currentPeer.Addr())
 
 	if i.headersFirstMode {
 		nextCheckPoint := i.chain.findNextHeaderCheckpoint(i.state.LastHeight)

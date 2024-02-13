@@ -58,17 +58,17 @@ func (mi *mongoInstance) SetupIndexerClient(ctx context.Context, dbName string) 
 		Options: options.Index().SetUnique(false),
 	}
 
-	fundingTxhashIndex := mongo.IndexModel{
-		Keys:    bson.D{{Key: "funding_tx_hash", Value: 1}},
+	fundingTxIndex := mongo.IndexModel{
+		Keys:    bson.D{{Key: "funding_tx_hash", Value: 1}, {Key: "funding_tx_index", Value: 1}},
 		Options: options.Index().SetUnique(false),
 	}
 
-	fundingTxIndexIndex := mongo.IndexModel{
-		Keys:    bson.D{{Key: "funding_tx_index", Value: 1}},
-		Options: options.Index().SetUnique(false),
+	_, err = OutPointCol.Indexes().CreateOne(ctx, spendingTxhashIndex)
+	if err != nil {
+		return mi, err
 	}
 
-	_, err = TxCol.Indexes().CreateMany(ctx, []mongo.IndexModel{spendingTxhashIndex, fundingTxhashIndex, fundingTxIndexIndex})
+	_, err = OutPointCol.Indexes().CreateOne(ctx, fundingTxIndex)
 	if err != nil {
 		return mi, err
 	}

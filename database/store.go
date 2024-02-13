@@ -214,23 +214,24 @@ func (s *store) PutBlock(block *wire.MsgBlock) error {
 	s.processTxs(block.Transactions, block.BlockHash().String(), prevBlock.Height+1)
 
 	s.latestHeight = prevBlock.Height + 1
-	s.logger.Info(fmt.Sprintf("Height: %d", s.latestHeight))
+	// s.logger.Info(fmt.Sprintf("Height: %d", s.latestHeight))
 	return nil
 }
 
 func (s *store) processTxs(txs []*wire.MsgTx, blockhash string, blockIndex int32) {
-	wg := new(sync.WaitGroup)
+
+	// wg := new(sync.WaitGroup)
 	for _, tx := range txs {
-		go func(tx *wire.MsgTx) {
-			defer wg.Done()
-			err := s.PutTx(tx, blockhash, blockIndex)
-			if err != nil {
-				s.logger.Error(err.Error())
-			}
-		}(tx)
-		wg.Add(1)
+		// wg.Add(1)
+		// go func(tx *wire.MsgTx) {
+		err := s.PutTx(tx, blockhash, blockIndex)
+		if err != nil {
+			s.logger.Error(err.Error())
+		}
+		// wg.Done()
+		// }(tx)
 	}
-	wg.Wait()
+	// wg.Wait()
 }
 
 func (s *store) PutTx(tx *wire.MsgTx, blockhash string, blockIndex int32) error {
